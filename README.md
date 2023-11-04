@@ -3,7 +3,7 @@
 > A local HPC cluster that uses the Slurm Scheduler.
 
 - [Step 1: Install Proxmox](1-proxmox-cloud-init/README.md).
-- [Step 2: Set up K3s Cluster](2-slurm-scheduler/README.md).
+- [Step 2: Setup the Slurm Scheduler](2-slurm-scheduler/README.md).
 - [Step 3: Install Application (Module, MPI)](3-software-management/README.md).
 
 ![](docs/intro.png)
