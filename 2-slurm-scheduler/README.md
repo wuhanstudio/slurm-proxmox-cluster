@@ -21,6 +21,9 @@ $ sudo vim /etc/exports
 
 $ sudo exportfs -a
 $ sudo systemctl restart nfs-kernel-server
+
+# Test (Share a file)
+$ touch /mnt/slurmfs/manager
 ```
 
 ```
@@ -36,6 +39,9 @@ $ sudo vim /etc/fstab
     192.168.1.219:/mnt/slurmfs    /mnt/slurmfs    nfs    defaults   0 0
 
 $ sudo mount -a
+
+$ Test (Share a file)
+$ touch /mnt/slurmfs/compute
 ```
 
 Now both the manager node and compute nodes should have access to the folder `/mnt/slurmfs`.
@@ -51,19 +57,22 @@ $ cd /etc/slurm-llnl
 $ sudo cp /usr/share/doc/slurm-client/examples/slurm.conf.simple.gz .
 $ sudo gzip -d slurm.conf.simple.gz
 $ sudo mv slurm.conf.simple slurm.conf
+
+# You can also use slurm_no_acct.conf in this GitHub repo
 $ sudo vim /etc/slurm-llnl/slurm.conf
 
+    ClusterName=proxmox
     SlurmctldHost=manager
     NodeName=compute01 NodeAddr=192.168.1.181 CPUs=1 State=UNKNOWN
     NodeName=compute02 NodeAddr=192.168.1.152 CPUs=1 State=UNKNOWN
-    PartitionName=mycluster Nodes=comoute[01-02] Default=YES MaxTime=INFINITE State=UP
+    PartitionName=mac Nodes=compute[01-02] Default=YES MaxTime=INFINITE State=UP
 
+# You can also use cgroup.conf in this GitHub repo
 $ sudo vim /etc/slurm-llnl/cgroup.conf
 
     CgroupMountpoint="/sys/fs/cgroup"
     CgroupAutomount=yes
     CgroupReleaseAgentDir="/etc/slurm-llnl/cgroup"
-    AllowedDevicesFile="/etc/slurm-llnl/cgroup_allowed_devices_file.conf"
     ConstrainCores=no
     TaskAffinity=no
     ConstrainRAMSpace=yes
@@ -75,24 +84,17 @@ $ sudo vim /etc/slurm-llnl/cgroup.conf
     MaxSwapPercent=100
     MinRAMSpace=30
 
-$ sudo vim /etc/slurm-llnl/cgroup_allowed_devices_file.conf
-
-    /dev/null
-    /dev/urandom
-    /dev/zero
-    /dev/sda*
-    /dev/cpu/*/*
-    /dev/pts/*
-    /mnt/slurmfs/*
-
-$ sudo cp /etc/slurm-llnl/slurm.conf /etc/slurm-llnl/cgroup.conf /etc/slurm-llnl/cgroup_allowed_devices_file.conf /mnt/slurmfs/
+$ sudo cp /etc/slurm-llnl/slurm.conf /etc/slurm-llnl/cgroup.conf /mnt/slurmfs/
 $ sudo cp /etc/munge/munge.key /mnt/slurmfs/
 
 $ sudo systemctl enable munge
-$ sudo systemctl start munge
+$ sudo systemctl restart munge
 
 $ sudo systemctl enable slurmctld
-$ sudo systemctl start slurmctld
+$ sudo systemctl restart slurmctld
+
+# Test muge communication
+$ munge -n | unmunge
 ```
 
 ```
@@ -104,10 +106,13 @@ $ sudo cp /mnt/slurmfs/slurm.conf /etc/slurm-llnl/slurm.conf
 $ sudo cp /mnt/slurmfs/cgroup* /etc/slurm-llnl
 
 $ sudo systemctl enable munge
-$ sudo systemctl start munge
+$ sudo systemctl restart munge
 
 $ sudo systemctl enable slurmd
-$ sudo systemctl start slurmd
+$ sudo systemctl restart slurmd
+
+# Test muge communication
+$ munge -n | unmunge
 ```
 
 If everything works, you should see the cluster info:
@@ -116,25 +121,40 @@ If everything works, you should see the cluster info:
 $ sinfo -N
 
 NODELIST   NODES    PARTITION   STATE
-compute01      1   mycluster*    idle
-compute02      1   mycluster*    idle
+compute01      1     proxmox*    idle
+compute02      1     proxmox*    idle
 ```
 
-Here are some useful commands for debugging if the cluster status is incorrect.
+If you get this error, here are some useful commands to fix the problem.
+
+```
+ubuntu@compute02:~$ sinfo -N
+slurm_load_partitions: Zero Bytes were transmitted or received
+```
 
 ```
 # For the manager
 
+# Check if the manager is Up
 $ scontrol ping
+
+# If the manager is down, restart munge on each node since the key was changed.
+$ sudo systemctl restart munge
+
+# For the manager, check sclurmctld
 $ sudo slurmctld -D -vvvvvv
 
-# For each compute node
+# For each compute node, check slurmd
 $ sudo slurmd -D -vvvvv
-$ sudo slurmd -D -N $(hostname -s)
 ```
 
-### Optional (Accounting)
+Now we can use `sbatch`, `squeue`, `sstat`, but `sacct` won't display completed job info.
 
+To use `sacct`, we need to enable slurm accounting, which needs a MySQL database.
+
+### Optional (Slurm Accounting)
+
+To enable slurm accounting, we need to install the mariadb/mysql database.
 
 ```
 # For the manager node
@@ -148,52 +168,53 @@ $ sudo vim /etc/mysql/mariadb.conf.d/50-server.cnf
     innodb_lock_wait_timeout=900
 
 $ sudo systemctl enable mariadb
-$ sudo systemctl start mariadb
+$ sudo systemctl restart mariadb
+```
 
+Then, we need to set up the password and database for slurm application.
+
+```
 $ sudo mysql_secure_installation
 $ sudo mysql -u root -p
     > grant all on slurm_acct_db.* TO 'slurm'@'%' identified by 'my_password' with grant option;
     > create database slurm_acct_db;
+    > grant all on slurm_jobcomp_db.* TO 'slurm'@'%' identified by 'my_password' with grant option;
+    > create database slurm_jobcomp_db;
+```
 
+And set up the `slurmdbd` service. 
+
+```
+# You can also use slurmdbd.conf in this GitHub repo
 $ sudo vim /etc/slurm-llnl/slurmdbd.conf
-    ArchiveEvents=yes
-    ArchiveJobs=yes
-    ArchiveResvs=yes
-    ArchiveSteps=no
-    ArchiveSuspend=no
-    ArchiveTXN=no
-    ArchiveUsage=no
-    #ArchiveScript=/usr/sbin/slurm.dbd.archive
-    AuthInfo=/var/run/munge/munge.socket.2
     AuthType=auth/munge
 
     DbdHost=manager
+    DbdAddr=192.168.1.219
+    DbdPort=6819
     DebugLevel=info
-    PurgeEventAfter=1month
-    PurgeJobAfter=12month
-    PurgeResvAfter=1month
-    PurgeStepAfter=1month
-    PurgeSuspendAfter=1month
-    PurgeTXNAfter=12month
-    PurgeUsageAfter=24month
-    LogFile=/var/log/slurmdbd.log
+
+    LogFile=/var/log/slurm-llnl/slurmdbd.log
     PidFile=/var/run/slurmdbd.pid
 
+    SlurmUser=slurm
     StorageType=accounting_storage/mysql
     StorageHost=manager
-    StoragePass=my_password
     StorageUser=slurm
+    StoragePass=my_password
     StorageLoc=slurm_acct_db
 
 $ sudo systemctl enable slurmdbd
-$ sudo systemctl start slurmdbd
+$ sudo systemctl restart slurmdbd
 
+# You can also use slurm_acct.conf in this GitHub repo
 $ sudo vim /etc/slurm-llnl/slurm.conf
     # LOGGING AND ACCOUNTING
     AccountingStorageHost=manager
     AccountingStorageLoc=slurm_acct_db
     AccountingStorageUser=slurm
     AccountingStorageType=accounting_storage/slurmdbd
+    AccountingStoragePort=6819
 
     JobCompType=jobcomp/mysql
     JobCompHost=manager
@@ -202,23 +223,38 @@ $ sudo vim /etc/slurm-llnl/slurm.conf
     JobContainerType=job_container/none
     JobAcctGatherType=jobacct_gather/linux
 
-$ sudo mysql -u root -p
-    > grant all on slurm_jobcomp_db.* TO 'slurm'@'%' identified by 'my_password' with grant option;
-    > create database slurm_jobcomp_db;
-
 $ sudo cp /etc/slurm-llnl/slurm.conf /mnt/slurmfs/slurm.conf
 $ sudo systemctl restart slurmctld
-
-$ scontrol show nodes
-$ scontrol show job
 ```
-
 
 ```
 # For each compute node
 $ sudo cp /mnt/slurmfs/slurm.conf /etc/slurm-llnl/slurm.conf
 $ sudo systemctl restart slurmd
 ```
+
+```
+# Check if the cluster is added to the manager
+$ sacctmgr list cluster
+   Cluster     ControlHost  ControlPort   RPC     Share GrpJobs       GrpTRES GrpSubmit MaxJobs       MaxTRES MaxSubmit     MaxWall                  QOS   Def QOS
+---------- --------------- ------------ ----- --------- ------- ------------- --------- ------- ------------- --------- ----------- -------------------- ---------
+   proxmox   192.168.1.219         6817  8704         1                                                                                           normal
+
+# If not, the cluster can be added using sacctmgr
+$ sudo sacctmgr add cluster proxmox
+```
+
+Other useful commands for debugging.
+
+```
+$ sacctmgr show configuration
+$ sacctmgr list cluster
+
+$ scontrol show nodes
+$ scontrol show job
+```
+
+Congradulations! Now you have a HPC cluster running Slurm.
 
 ### Optional (Swap Area)
 
