@@ -244,6 +244,14 @@ $ sacctmgr list cluster
 $ sudo sacctmgr add cluster proxmox
 ```
 
+If the cluster cannot be added to the manager, please make sure the IP address of each node is added to `/etc/hosts`:
+
+```
+# /etc.hosts on both the manager node and compute nodes
+192.168.1.219 manager
+192.168.1.181 cpmpute01
+192.168.1.152 compute02
+```
 Other useful commands for debugging.
 
 ```
